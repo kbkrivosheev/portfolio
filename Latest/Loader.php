@@ -8,8 +8,10 @@ use DateTimeImmutable;
 use Exception;
 use GuzzleHttp\Client;
 use GuzzleHttp\Exception\GuzzleException;
+use GuzzleHttp\RequestOptions;
 use RuntimeException;
 use Yii;
+use yii\helpers\BaseFileHelper;
 use yii\web\BadRequestHttpException;
 
 final class Loader
@@ -18,56 +20,61 @@ final class Loader
     private const UPLOADS_DIR = '@app/web/uploads/MedicalProducts';
     private const FILE_NAME = 'registry.xls';
     private const HEADERS = ['Content-Type' => 'application/x-www-form-urlencoded'];
+    private const START_DATE = '01.01.2007';
 
+
+    /**
+     * @throws LoaderException
+     */
     public function handle(): string
     {
         try {
             $directoryPath = Yii::getAlias(self::UPLOADS_DIR);
-            $this->makeFolder($directoryPath);
+            BaseFileHelper::createDirectory($directoryPath);
             $filePath = $directoryPath . DIRECTORY_SEPARATOR . self::FILE_NAME;
             $this->makeFile($filePath, $this->getContent());
-        } catch (BadRequestHttpException $e) {
-            throw new BadRequestHttpException($e->getMessage());
+        } catch (Exception $e) {
+            throw new LoaderException($e->getMessage());
         }
         return $filePath;
     }
 
+    /**
+     * @throws BadRequestHttpException
+     */
     private function getContent(): string
     {
         $client = new Client();
         try {
-            $response = $client->post(
-                self::URL,
-                [
-                    'query' => [
-                        'xls' => 1,
-                        'q_status' => 1,
-                        'dt_ru_from' => '01.01.2007',
-                        'dt_ru_to' => (new DateTimeImmutable())->format('d.m.Y'),
-                    ],
-                    'headers' => self::HEADERS
-                ]
-
-            );
-        } catch (GuzzleException | Exception $e) {
+            $response = $client->post(self::URL, [
+                RequestOptions::QUERY => [
+                    'xls' => 1,
+                    'q_status' => 1,
+                    'dt_ru_from' => self::START_DATE,
+                    'dt_ru_to' => (new DateTimeImmutable())->format('d.m.Y'),
+                ],
+                RequestOptions::HEADERS => self::HEADERS
+            ]);
+        } catch (GuzzleException|Exception $e) {
             throw new BadRequestHttpException('Ошибка при выполнении запроса: ' . $e->getMessage());
         }
-        if ($response->getStatusCode() !== 200 || !$response->getBody()) {
-            throw new BadRequestHttpException('Данные не получены');
-        }
-        return $response->getBody()->getContents();
-    }
-    private function makeFolder(string $path): void
-    {
-        if (!is_dir($path) && !mkdir($path, 0755, true) && !is_dir($path)) {
-            throw new RuntimeException("Не удалось создать папку \"$path\"");
-        }
-    }
-    private function makeFile(string $path, string $content): void
-    {
-        if (file_put_contents($path, $content) === false) {
-            throw new RuntimeException("Не удалось записать данные в файл \"$path\"");
-        }
+       return $response->getBody()->getContents();
     }
 
+    /**
+     * @throws RuntimeException
+     */
+    private function makeFile(string $path, string $content): void
+    {
+        $stream = fopen($path, 'wb');
+        if ($stream === false) {
+            throw new RuntimeException("Не удалось открыть файл $path для записи");
+        }
+        $chunkSize = (8 ** 8) / 2; // 8 Mb
+        $length = mb_strlen($content);
+        for ($offset = 0; $offset < $length; $offset += $chunkSize) {
+            fwrite($stream, mb_substr($content, $offset, $chunkSize));
+        }
+        fclose($stream);
+    }
 }
